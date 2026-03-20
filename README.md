@@ -44,6 +44,74 @@ Demo completa em `Go 1.26.0` para ensinar instrumentação moderna de `traces + 
 - `postgres:17-alpine`
 - `redis:8.2-alpine`
 
+## Pré-requisitos
+
+Para replicar a demo sem surpresas, assuma o seguinte:
+
+- `Go 1.26.0` instalado
+- Docker Desktop ou Docker Engine funcionando
+- acesso de rede do seu notebook até o collector
+- um collector OTLP HTTP já existente e aceitando:
+  - `POST /v1/traces`
+  - `POST /v1/metrics`
+
+### Checklist rápido do collector
+
+Antes de subir a app, confirme:
+
+1. o endpoint de traces está correto
+2. o endpoint de métricas está correto
+3. se houver autenticação, o header já está definido
+4. o collector aceita `http/protobuf`
+
+Se o collector exigir token, o valor em `OTEL_EXPORTER_OTLP_HEADERS` deve estar URL-encoded. Exemplo:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
+```
+
+## Replicação rápida do zero
+
+Se você quiser apenas validar tudo do jeito mais direto possível, rode exatamente nesta ordem:
+
+```bash
+cd /Users/leonardozwirtes/Documents/Projects/go-otel-app
+cp .env.example .env
+```
+
+Edite o `.env` e preencha pelo menos:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://SEU-COLLECTOR:4318/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://SEU-COLLECTOR:4318/v1/metrics
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
+```
+
+Depois:
+
+```bash
+make up
+make run
+```
+
+Em outro terminal:
+
+```bash
+bash ./examples/curl/01-health.sh
+bash ./examples/curl/02-create-order.sh
+curl -sS http://localhost:8080/metrics | head -n 40
+```
+
+Se tudo estiver certo:
+
+- `healthz` retorna `200`
+- `readyz` retorna `200`
+- `POST /api/v1/orders` retorna `201`
+- a resposta inclui `trace_id`
+- o pedido passa de `queued` para `fulfilled`
+- aparecem métricas em `/metrics`
+- o `service.name` configurado aparece no backend
+
 ## Arquitetura
 
 ```mermaid
@@ -429,6 +497,30 @@ OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://SEU-COLLECTOR:4318/v1/metrics
 OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
 ```
 
+Se quiser, um `.env` mínimo funcional fica assim:
+
+```bash
+APP_NAME=go-otel-app
+APP_ENV=local
+APP_VERSION=1.0.0
+HTTP_ADDR=:8080
+PUBLIC_BASE_URL=http://localhost:8080
+
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/go_golden_signals_demo?sslmode=disable
+REDIS_ADDR=localhost:6379
+
+OTEL_SERVICE_NAME=go-otel-app
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local,service.version=1.0.0
+OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=otlp
+OTEL_LOGS_EXPORTER=none
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://SEU-COLLECTOR:4318/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://SEU-COLLECTOR:4318/v1/metrics
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
+OTEL_SEMCONV_STABILITY_OPT_IN=database
+```
+
 ### 2. Subir dependências locais
 
 ```bash
@@ -439,6 +531,14 @@ Isso sobe apenas:
 
 - PostgreSQL
 - Redis
+
+Se quiser validar a infraestrutura antes de iniciar a app:
+
+```bash
+docker compose ps
+```
+
+Você deve ver `postgres` e `redis` como `healthy`.
 
 ### 3. Instalar dependências Go
 
@@ -452,11 +552,37 @@ go mod tidy
 make run
 ```
 
+O processo sobe:
+
+- API HTTP
+- simuladores internos
+- worker interno
+- exportação OTLP de traces
+- exportação OTLP de métricas
+- endpoint `/metrics`
+
+Se tudo estiver saudável, você deve conseguir chamar:
+
+```bash
+curl -sS http://localhost:8080/healthz
+curl -sS http://localhost:8080/readyz
+```
+
 ### 5. Validar saúde
 
 ```bash
 curl -sS http://localhost:8080/healthz
 curl -sS http://localhost:8080/readyz
+```
+
+Resposta esperada:
+
+```json
+{"status":"ok","time":"2026-03-20T15:00:00Z"}
+```
+
+```json
+{"status":"ready","time":"2026-03-20T15:00:01Z"}
 ```
 
 ### 6. Gerar telemetria
@@ -485,11 +611,123 @@ Falha de shipping com retry e DLQ:
 bash ./examples/curl/05-create-order-with-shipping-dlq.sh
 ```
 
+### 6.1 Resposta esperada do `POST /api/v1/orders`
+
+Exemplo de sucesso:
+
+```json
+{
+  "trace_id": "2b1f3a7b5c9049e18d3cba0f5a1f9c31",
+  "order": {
+    "id": "0d08a1f0-8d6e-4b18-9bdb-7d52972d07da",
+    "customer_id": "cust-1001",
+    "sku": "sku-golden-signal",
+    "quantity": 2,
+    "amount_cents": 12990,
+    "status": "queued",
+    "created_at": "2026-03-20T15:01:00Z",
+    "updated_at": "2026-03-20T15:01:00Z"
+  }
+}
+```
+
+Exemplo de erro de dependência:
+
+```json
+{
+  "trace_id": "b4b0f4f4329f4c6c84e8a8c98d0e53aa",
+  "error": {
+    "code": "inventory_failed",
+    "message": "inventory simulator forced failure",
+    "error_type": "inventory_dependency"
+  }
+}
+```
+
+Guarde o `trace_id`. Ele é o caminho mais rápido para provar no backend que:
+
+- o span inbound chegou
+- os spans HTTP outbound foram criados
+- o banco foi instrumentado
+- o worker participou do mesmo cenário de negócio
+
 ### 7. Conferir métricas locais
 
 ```bash
 curl -sS http://localhost:8080/metrics
 ```
+
+Exemplos de nomes que você deve encontrar:
+
+```text
+http_server_request_duration_seconds
+http_client_request_duration_seconds
+db_client_operation_duration_seconds
+app_order_create_duration_seconds
+app_fulfillment_job_duration_seconds
+app_order_created_total
+app_order_failed_total
+app_fulfillment_queue_depth_jobs
+app_fulfillment_worker_active_workers
+```
+
+## Como validar na stack do collector
+
+Depois de chamar `POST /api/v1/orders`, valide no backend nesta ordem:
+
+1. filtre por `service.name = go-otel-app`
+2. pesquise pelo `trace_id` retornado pela API
+3. confirme a árvore do trace
+4. confirme métricas do serviço
+
+### O trace saudável deve mostrar
+
+1. span inbound `POST /api/v1/orders`
+2. span `order.create`
+3. span `order.create.validate`
+4. span `order.create.persist`
+5. span SQL de `INSERT` ou `UPDATE`
+6. span Redis de cache
+7. span Redis de fila
+8. spans HTTP client para payment e inventory
+9. processamento do worker
+10. span HTTP client para shipping
+
+### As métricas mínimas que devem existir
+
+- `http.server.request.duration`
+- `http.client.request.duration`
+- `db.client.operation.duration`
+- `app.order.create.duration`
+- `app.fulfillment.job.duration`
+- `app.order.created`
+- `app.order.failed`
+- `app.fulfillment.queue.depth`
+- `app.fulfillment.worker.active`
+
+## Roteiro de demo para o cliente
+
+Se a ideia for apresentar essa app em uma call curta, esta ordem funciona bem:
+
+1. mostre o `.env` e destaque que traces e métricas vão para o collector externo
+2. suba `postgres` e `redis` com `make up`
+3. suba a app com `make run`
+4. chame `POST /api/v1/orders`
+5. mostre o `trace_id` da resposta
+6. procure o `trace_id` na stack
+7. abra `/metrics`
+8. rode um cenário com latência
+9. rode um cenário com erro de inventory
+10. rode um cenário com retry e DLQ no shipping
+
+Isso cobre, em poucos minutos:
+
+- traces inbound e outbound
+- DB e Redis instrumentados
+- métricas automáticas
+- métricas customizadas
+- golden signals
+- instrumentação em fluxo síncrono e assíncrono
 
 ## Payload do endpoint principal
 
@@ -596,6 +834,12 @@ Se a app já estiver rodando:
 
 ```bash
 make smoke
+```
+
+Se quiser encerrar tudo no final:
+
+```bash
+make down
 ```
 
 ## Como adaptar para a app do cliente
