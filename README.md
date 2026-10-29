@@ -87,8 +87,8 @@ cp .env.example .env
 Edite o `.env` e preencha pelo menos:
 
 ```bash
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://SEU-COLLECTOR:4318/v1/traces
-OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://SEU-COLLECTOR:4318/v1/metrics
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example.com/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://collector.example.com/v1/metrics
 OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
 ```
 
