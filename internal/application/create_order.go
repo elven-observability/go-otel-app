@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/elven-observability/go-otel-app/internal/domain"
@@ -146,7 +147,10 @@ func (uc CreateOrderUseCase) enqueueFulfillment(ctx context.Context, order domai
 	ctx, span := uc.Tracer.Start(ctx, "order.create.enqueue_fulfillment")
 	defer span.End()
 
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
 	job := domain.FulfillmentJob{
+		TraceParent:       carrier.Get("traceparent"),
 		OrderID:           order.ID,
 		SKU:               order.SKU,
 		Quantity:          order.Quantity,

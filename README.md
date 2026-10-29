@@ -1,6 +1,12 @@
 # Go Golden Signals Demo
 
-Demo completa em `Go 1.26.0` para ensinar instrumentação moderna de `traces + metrics` com OpenTelemetry, focada em:
+Aplicacao de referencia sobre os SDKs oficiais OpenTelemetry, nao um SDK Go Elven publicado separadamente.
+Documentacao autoritativa: [docs.elven.works](https://docs.elven.works/).
+Fonte da documentacao e correcoes: [elvenworks-ps/docs.elven.works](https://github.com/elvenworks-ps/docs.elven.works).
+
+O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. A candidata foi testada em Go 1.26.10 no macOS/ARM64; use uma versao corrigida e suportada do runtime.
+
+Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada em:
 
 - exportar tudo para um collector OTLP externo
 - expor `/metrics` localmente em Prometheus para debug e ensino
@@ -20,23 +26,22 @@ Demo completa em `Go 1.26.0` para ensinar instrumentação moderna de `traces + 
 - `OTEL_SEMCONV_STABILITY_OPT_IN=database` para usar `db.client.operation.duration`
 - exportação OTLP HTTP para traces e metrics
 
-## Versões validadas em 20 de março de 2026
+## Versoes da candidata auditada em 29 de outubro de 2026
 
 ### Runtime e bibliotecas principais
 
-- `Go 1.26.0`
-- `go.opentelemetry.io/otel v1.42.0`
-- `go.opentelemetry.io/contrib v1.42.0`
-- `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0`
-- `go.opentelemetry.io/contrib/instrumentation/runtime v0.67.0`
-- `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.42.0`
-- `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.42.0`
-- `go.opentelemetry.io/otel/exporters/prometheus v0.64.0`
-- `github.com/go-chi/chi/v5 v5.2.5`
-- `github.com/jackc/pgx/v5 v5.8.0`
-- `github.com/redis/go-redis/v9 v9.18.0`
-- `github.com/redis/go-redis/extra/redisotel/v9 v9.18.0`
-- `github.com/XSAM/otelsql v0.41.0`
+- `Go 1.26.10` (requisito do modulo: `1.26.0`)
+- `go.opentelemetry.io/otel v1.47.0`
+- `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0`
+- `go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0`
+- `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0`
+- `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.47.0`
+- `go.opentelemetry.io/otel/exporters/prometheus v0.69.0`
+- `github.com/go-chi/chi/v5 v5.5.0`
+- `github.com/jackc/pgx/v5 v5.11.0`
+- `github.com/redis/go-redis/v9 v9.23.0`
+- `github.com/redis/go-redis/extra/redisotel/v9 v9.23.0`
+- `github.com/XSAM/otelsql v0.44.0`
 - `github.com/testcontainers/testcontainers-go v0.41.0`
 
 ### Infra local
@@ -230,6 +235,19 @@ Expõe métricas úteis do runtime Go, por exemplo:
 
 ## Bootstrap OpenTelemetry
 
+O bootstrap completo e os limites efetivos estao em
+[`telemetry.go`](internal/platform/observability/telemetry.go) e
+[`privacy.go`](internal/platform/observability/privacy.go).
+
+- `OTEL_SDK_DISABLED=true` desabilita providers, exportacao e `/metrics` (204). Reinicie a aplicacao para aplicar disable ou rollback.
+- Configuracao invalida de telemetria gera aviso generico e providers no-op; falhas reais de banco/Redis continuam sendo erros da aplicacao.
+- Fila de traces: 256 spans, lote de 64, descarte em saturacao sem bloquear pedidos; exportacao/retry ate 2 s por operacao e shutdown de telemetria ate 3 s (ou prazo menor do chamador).
+- Metricas: 128 series por instrumento/ciclo, incluindo overflow; duas leituras (OTLP e Prometheus) tem custo adicional.
+- SQL e comandos Redis nao sao capturados. URLs, headers, eventos de excecao, links e descricoes de erro nao sao exportados. Apenas atributos operacionais permitidos permanecem; isso nao e garantia universal de ausencia de PII.
+- HTTPS com validacao TLS para coletores remotos; HTTP permitido apenas em loopback para desenvolvimento. Nao use credenciais na URL.
+- Logs ficam em stdout; nao ha exporter OTLP de logs nesta referencia. Nao instale uma segunda autoridade de instrumentacao no mesmo processo.
+- Jobs carregam somente `traceparent`; o worker preserva a identidade do trace, inclusive em retries. Nao transportam baggage, headers ou credenciais. Jobs antigos sem esse campo continuam validos e iniciam outro trace.
+
 O coração da demo está em criar um `TracerProvider` e um `MeterProvider` com dois destinos para métricas:
 
 1. `PeriodicReader` para o collector OTLP
@@ -237,10 +255,7 @@ O coração da demo está em criar um `TracerProvider` e um `MeterProvider` com 
 
 ```go
 res, err := resource.New(ctx,
-	resource.WithFromEnv(),
 	resource.WithTelemetrySDK(),
-	resource.WithProcess(),
-	resource.WithHost(),
 	resource.WithAttributes(
 		attribute.String("service.name", cfg.AppName),
 		attribute.String("service.version", cfg.ServiceVersion),
@@ -264,7 +279,8 @@ promExporter, err := otelprom.New(
 )
 
 traceProvider := sdktrace.NewTracerProvider(
-	sdktrace.WithBatcher(traceExporter),
+	// Veja telemetry.go: batch limitado e exporter com filtro de privacidade.
+	sdktrace.WithBatcher(privateExporter{traceExporter}, sdktrace.WithMaxQueueSize(256), sdktrace.WithMaxExportBatchSize(64)),
 	sdktrace.WithResource(res),
 )
 
@@ -278,7 +294,6 @@ otel.SetTracerProvider(traceProvider)
 otel.SetMeterProvider(meterProvider)
 otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 	propagation.TraceContext{},
-	propagation.Baggage{},
 ))
 ```
 
@@ -337,6 +352,7 @@ O banco é aberto com `otelsql` usando `pgx/stdlib`.
 
 ```go
 db, err := otelsql.Open("pgx", cfg.DatabaseURL,
+	otelsql.WithSpanOptions(otelsql.SpanOptions{DisableQuery: true}),
 	otelsql.WithAttributes(
 		attribute.String("db.system.name", "postgresql"),
 	),
@@ -372,7 +388,7 @@ Redis está instrumentado tanto para traces quanto para metrics.
 ```go
 if err := redisotel.InstrumentTracing(client,
 	redisotel.WithTracerProvider(otel.GetTracerProvider()),
-	redisotel.WithDBStatement(true),
+	redisotel.WithDBStatement(false),
 ); err != nil {
 	return nil, err
 }
@@ -492,8 +508,8 @@ cp .env.example .env
 Edite o `.env` e aponte estes campos para o seu collector:
 
 ```bash
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://SEU-COLLECTOR:4318/v1/traces
-OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://SEU-COLLECTOR:4318/v1/metrics
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://SEU-COLLECTOR/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://SEU-COLLECTOR/v1/metrics
 OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
 ```
 
@@ -515,8 +531,8 @@ OTEL_TRACES_EXPORTER=otlp
 OTEL_METRICS_EXPORTER=otlp
 OTEL_LOGS_EXPORTER=none
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://SEU-COLLECTOR:4318/v1/traces
-OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://SEU-COLLECTOR:4318/v1/metrics
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://SEU-COLLECTOR/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://SEU-COLLECTOR/v1/metrics
 OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20SEU_TOKEN
 OTEL_SEMCONV_STABILITY_OPT_IN=*
 ```

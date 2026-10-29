@@ -61,14 +61,6 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid DATABASE_URL: %w", err)
 	}
 
-	if _, err := url.Parse(cfg.OTLPTracesEndpoint); err != nil {
-		return Config{}, fmt.Errorf("invalid OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: %w", err)
-	}
-
-	if _, err := url.Parse(cfg.OTLPMetricsEndpoint); err != nil {
-		return Config{}, fmt.Errorf("invalid OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: %w", err)
-	}
-
 	return cfg, nil
 }
 

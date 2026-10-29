@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/elven-observability/go-otel-app/internal/domain"
@@ -22,6 +23,10 @@ type ProcessFulfillmentUseCase struct {
 
 func (uc ProcessFulfillmentUseCase) Execute(ctx context.Context, job domain.FulfillmentJob) error {
 	start := time.Now()
+	// Carry only W3C trace identity across the queue, never baggage or headers.
+	if len(job.TraceParent) <= 128 {
+		ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": job.TraceParent})
+	}
 	ctx, span := uc.Tracer.Start(ctx, "worker.fulfillment.process")
 	defer span.End()
 
