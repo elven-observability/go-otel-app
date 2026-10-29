@@ -42,6 +42,7 @@ type Order struct {
 }
 
 type FulfillmentJob struct {
+	TraceParent       string `json:"traceparent,omitempty"`
 	OrderID           string `json:"order_id"`
 	SKU               string `json:"sku"`
 	Quantity          int    `json:"quantity"`

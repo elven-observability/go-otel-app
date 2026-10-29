@@ -46,7 +46,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	telemetry, err := observability.New(ctx, cfg)
 	if err != nil {
-		return nil, err
+		logger.Warn("telemetry unavailable; continuing without export")
+		telemetry = observability.Disabled(cfg.AppName)
 	}
 	cleanup = append(cleanup, func(ctx context.Context) error {
 		return telemetry.Shutdown(ctx)
@@ -161,6 +162,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 func openDatabase(ctx context.Context, cfg config.Config) (*sql.DB, metric.Registration, error) {
 	db, err := otelsql.Open("pgx", cfg.DatabaseURL,
+		otelsql.WithSQLCommenter(false),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{DisableQuery: true}),
 		otelsql.WithAttributes(
 			attribute.String("db.system.name", "postgresql"),
 		),
@@ -175,10 +178,13 @@ func openDatabase(ctx context.Context, cfg config.Config) (*sql.DB, metric.Regis
 		otelsql.WithMeterProvider(otel.GetMeterProvider()),
 	)
 	if err != nil {
+		_ = db.Close()
 		return nil, nil, err
 	}
 
 	if err := db.PingContext(ctx); err != nil {
+		_ = reg.Unregister()
+		_ = db.Close()
 		return nil, nil, err
 	}
 
@@ -194,18 +200,20 @@ func openRedis(ctx context.Context, cfg config.Config) (*goredis.Client, error) 
 
 	if err := redisotel.InstrumentTracing(client,
 		redisotel.WithTracerProvider(otel.GetTracerProvider()),
-		redisotel.WithDBStatement(true),
+		redisotel.WithDBStatement(false),
 	); err != nil {
-		return nil, err
+		// Instrumentation must not prevent the business dependency from opening.
+		otel.Handle(err)
 	}
 
 	if err := redisotel.InstrumentMetrics(client,
 		redisotel.WithMeterProvider(otel.GetMeterProvider()),
 	); err != nil {
-		return nil, err
+		otel.Handle(err)
 	}
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 

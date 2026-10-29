@@ -89,6 +89,7 @@ type integrationEnv struct {
 	postgres    testcontainers.Container
 	redis       testcontainers.Container
 	otlpServer  *httptest.Server
+	traceBodies chan []byte
 }
 
 type createOrderResponse struct {
@@ -101,17 +102,57 @@ type getOrderResponse struct {
 	Order   domain.Order `json:"order"`
 }
 
-func newIntegrationEnv(t *testing.T, workerMaxAttempts int) *integrationEnv {
+func TestInvalidTelemetryDoesNotStopOrderProcessing(t *testing.T) {
+	env := newIntegrationEnv(t, 3, func(cfg *config.Config) {
+		cfg.OTLPTracesEndpoint = "%invalid"
+	})
+	response := env.createOrder(t, domain.CreateOrderInput{
+		CustomerID: "audit-private-customer", SKU: "sku-audit", Quantity: 1, AmountCents: 100,
+	})
+	require.Empty(t, response.TraceID)
+	require.Equal(t, domain.OrderStatusFulfilled, env.waitForOrderStatus(t, response.Order.ID, domain.OrderStatusFulfilled).Status)
+}
+
+func TestDatabaseAndRedisPayloadsAreNotExported(t *testing.T) {
+	env := newIntegrationEnv(t, 3)
+	ctx, span := env.app.Telemetry.Tracer.Start(context.Background(), "order.create")
+	require.NoError(t, env.app.Redis.Set(ctx, "audit-private-key", "audit-secret-PII", time.Minute).Err())
+	_, err := env.app.DB.ExecContext(ctx, "select 'audit-secret-PII'")
+	require.NoError(t, err)
+	span.End()
+	require.NoError(t, env.app.Telemetry.Shutdown(context.Background()))
+	count := 0
+	for {
+		select {
+		case body := <-env.traceBodies:
+			require.NotContains(t, string(body), "audit-secret-PII")
+			require.NotContains(t, string(body), "audit-private-key")
+			count++
+		default:
+			require.Positive(t, count)
+			return
+		}
+	}
+}
+
+func newIntegrationEnv(t *testing.T, workerMaxAttempts int, configure ...func(*config.Config)) *integrationEnv {
 	t.Helper()
 	t.Setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "database")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	otlpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+	traceBodies := make(chan []byte, 64)
+	otlpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/traces" {
+			select {
+			case traceBodies <- body:
+			default:
+			}
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("{}"))
 	}))
 	t.Cleanup(otlpServer.Close)
 
@@ -143,6 +184,9 @@ func newIntegrationEnv(t *testing.T, workerMaxAttempts int) *integrationEnv {
 		OTLPMetricsEndpoint:   otlpServer.URL + "/v1/metrics",
 		OTLPHeaders:           map[string]string{},
 		DeploymentEnvironment: "test",
+	}
+	for _, customize := range configure {
+		customize(&cfg)
 	}
 
 	app, err := bootstrap.New(ctx, cfg)
@@ -181,6 +225,7 @@ func newIntegrationEnv(t *testing.T, workerMaxAttempts int) *integrationEnv {
 		postgres:    postgresContainer,
 		redis:       redisContainer,
 		otlpServer:  otlpServer,
+		traceBodies: traceBodies,
 	}
 
 	t.Cleanup(func() {
