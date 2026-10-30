@@ -213,29 +213,28 @@ func TestEnvelopeActualBlockedBSPDetachesBackingStorage(t *testing.T) {
 	}
 }
 
-func borrowedTail() string {
-	parent := strings.Repeat("p", 1<<20)
-	return parent[len(parent)-128:]
-}
-
 func metadataSnapshot(t *testing.T, bounded bool) sdktrace.ReadOnlySpan {
 	t.Helper()
+	parent := strings.Repeat("p", 1<<20)
+	tail := func() string { return parent[len(parent)-128:] }
 	value := envelopeFixture()
-	value.Name = borrowedTail()
+	value.Name = tail()
 	value.Attributes = []attribute.KeyValue{
-		attribute.String(borrowedTail(), borrowedTail()),
-		attribute.StringSlice("array", []string{borrowedTail()}),
+		attribute.String(tail(), tail()),
+		attribute.StringSlice("array", []string{tail()}),
+		{Key: "nested", Value: attribute.SliceValue(attribute.StringValue(tail()))},
+		{Key: "map", Value: attribute.MapValue(attribute.String(tail(), tail()))},
 	}
-	value.Resource = resource.NewWithAttributes(borrowedTail(), attribute.String(borrowedTail(), borrowedTail()))
+	value.Resource = resource.NewWithAttributes(tail(), attribute.String(tail(), tail()))
 	value.InstrumentationScope = instrumentation.Scope{
-		Name: borrowedTail(), Version: borrowedTail(), SchemaURL: borrowedTail(),
-		Attributes: attribute.NewSet(attribute.String(borrowedTail(), borrowedTail())),
+		Name: tail(), Version: tail(), SchemaURL: tail(),
+		Attributes: attribute.NewSet(attribute.String(tail(), tail())),
 	}
-	value.Events[0].Name = borrowedTail()
-	value.Events[0].Attributes = []attribute.KeyValue{attribute.String(borrowedTail(), borrowedTail())}
-	value.Links[0].Attributes = []attribute.KeyValue{attribute.String(borrowedTail(), borrowedTail())}
-	value.Status.Description = borrowedTail()
-	state, err := (trace.TraceState{}).Insert(borrowedTail(), borrowedTail())
+	value.Events[0].Name = tail()
+	value.Events[0].Attributes = []attribute.KeyValue{attribute.String(tail(), tail())}
+	value.Links[0].Attributes = []attribute.KeyValue{attribute.String(tail(), tail())}
+	value.Status.Description = tail()
+	state, err := (trace.TraceState{}).Insert(tail(), tail())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,8 +267,8 @@ func TestEnvelopeAllMetadataBackingIsDetached(t *testing.T) {
 		return after.HeapAlloc - before.HeapAlloc
 	}
 	raw, copied := retained(false), retained(true)
-	t.Logf("all-metadata 20x1MiB raw_retained=%d detached_retained=%d shared_host_noisy=true", raw, copied)
-	if raw < 16<<20 || copied > 2<<20 {
+	t.Logf("all-metadata shared1MiB-parent raw_retained=%d detached_retained=%d shared_host_noisy=true", raw, copied)
+	if raw < 512<<10 || copied > 512<<10 {
 		t.Fatal("metadata backing control failed")
 	}
 }
