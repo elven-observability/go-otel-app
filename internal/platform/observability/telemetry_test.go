@@ -80,6 +80,59 @@ func TestHealthyExportPrivacyAndContext(t *testing.T) {
 	t.Logf("trace_bytes=%d metric_bytes=%d", len(bodies["/v1/traces"][0]), len(bodies["/v1/metrics"][0]))
 }
 
+func TestOwnedPipelineRejectsMetadataBeforeHealthyWireExport(t *testing.T) {
+	bodies := make(chan []byte, 4)
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/traces" {
+			bodies <- body
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+	}))
+	defer collector.Close()
+	tel, err := New(context.Background(), testConfig(collector.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tel.Shutdown(context.Background())
+	_, name := tel.Tracer.Start(context.Background(), strings.Repeat("n", 1<<20))
+	name.End()
+	_, event := tel.Tracer.Start(context.Background(), "event")
+	event.AddEvent(strings.Repeat("e", 1<<20))
+	event.End()
+	_, aggregate := tel.Tracer.Start(context.Background(), strings.Repeat("n", 12_000), trace.WithAttributes(attribute.String(strings.Repeat("k", 12_000), "value")))
+	aggregate.AddEvent(strings.Repeat("e", 12_000))
+	aggregate.End()
+	_, healthy := tel.Tracer.Start(context.Background(), "order.create")
+	healthy.End()
+	if err := tel.traceProvider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case body := <-bodies:
+		var decoded collectortrace.ExportTraceServiceRequest
+		if err := proto.Unmarshal(body, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, rs := range decoded.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, s := range ss.Spans {
+					count++
+					if s.Name != "order.create" {
+						t.Fatal("oversized span reached collector")
+					}
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("wire spans=%d", count)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("healthy span was not exported")
+	}
+}
+
 func TestDisabledAndInvalidEndpoint(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "true")
 	telemetry, err := New(context.Background(), testConfig("http://invalid-external.example"))

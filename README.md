@@ -57,7 +57,17 @@ Go 1.27.3 foi executado em Linux/ARM64 real com `go mod verify`, graph readonly,
 
 Para migrar, selecione o toolchain corrigido e repita os testes mantendo `go.mod`/`go.sum`. Go 1.27 requer macOS 13 ou posterior e remove opcoes legadas de `GODEBUG`/TLS; veja as [notas oficiais](https://go.dev/doc/go1.27). Outros sistemas/arquiteturas e throughput de producao nao foram qualificados por esse controle.
 
-Limite aberto: fila limitada por quantidade nao limita o envelope inteiro antes do BSP. Metadados grandes e o backing original de strings truncadas ainda exigem admissao/detachment; resultados de compatibilidade nao encerram essa revisao de recursos.
+Historico do baseline `8a1192f`: o limite de quantidade do BSP nao limitava o envelope inteiro, e strings truncadas ou views ja pequenas podiam reter backing grande. Os resultados Linux acima pertencem a esse baseline e nao qualificam automaticamente o fix abaixo.
+
+### Candidata de admissao antes do BSP
+
+O bootstrap desta candidata registra um processor de snapshot antes do BSP oficial: budget agregado de dados de 32 KiB por span, com cobrancas por campos/containers, cobrindo nome, atributos/keys/arrays, status, eventos, links, contextos, resource e scope. Envelope excessivo, profundidade maior que 64 ou texto malformado e descartado antes da fila; o trabalho da app continua. Os limites anteriores de quantidade, retry, timeout, redacao e cardinalidade de metricas permanecem.
+
+Strings usam `strings.Clone`; arrays, containers, resources e contextos sao reconstruidos sem referencia ao span original. A interface selada do SDK exige o construtor publico [SpanStub.Snapshot](https://pkg.go.dev/go.opentelemetry.io/otel/sdk@v1.47.0/trace/tracetest#SpanStub.Snapshot), do pacote `tracetest`. Esse uso e qualificado exatamente para SDK 1.47.0, com guard de startup e testes dos getters; nao e promessa de compatibilidade com outra versao. Atualizar SDK exige revisar o contrato e repetir os testes.
+
+O budget cobre dados retidos pela fila propria, nao RSS, spans ainda ativos, caches globais do SDK, providers externos ou toda alocacao anterior ao processor. Alguns getters publicos Go de arrays materializam uma copia antes de informar o tamanho; esse custo transitorio pode acompanhar o tamanho recebido, mesmo quando a admissao o rejeita. Nao ha garantia de overhead zero ou teto universal de memoria/CPU.
+
+`go test -race ./...` inclui controles positivos/negativos de envelope, collector real, heap apos GC e BSP bloqueado com 8 pais de 1 MiB, tanto truncamento quanto views ja pequenas. A candidata ainda exige CI nos dois toolchains e revisao independente antes de promocao. Nova execucao Docker/Linux ARM64 depende da liberacao do ambiente compartilhado; nao reutilize a prova do baseline como prova deste novo codigo.
 
 ## Pré-requisitos
 

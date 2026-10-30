@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -59,6 +60,20 @@ func New(ctx context.Context, cfg config.Config) (*Telemetry, error) {
 		if !safeEndpoint(endpoint) {
 			return nil, errors.New("telemetry endpoint requires HTTPS or loopback HTTP, without userinfo or query")
 		}
+	}
+	if err := validateSnapshotSDK(sdk.Version()); err != nil {
+		return nil, err
+	}
+	metadata := envelopeBudget{left: spanEnvelopeLimit}
+	var err error
+	if cfg.AppName, err = metadata.text(cfg.AppName); err != nil {
+		return nil, err
+	}
+	if cfg.ServiceVersion, err = metadata.text(cfg.ServiceVersion); err != nil {
+		return nil, err
+	}
+	if cfg.DeploymentEnvironment, err = metadata.text(cfg.DeploymentEnvironment); err != nil {
+		return nil, err
 	}
 	res, err := resource.New(ctx,
 		resource.WithTelemetrySDK(),
@@ -104,8 +119,15 @@ func New(ctx context.Context, cfg config.Config) (*Telemetry, error) {
 		return nil, err
 	}
 
+	batcher := sdktrace.NewBatchSpanProcessor(privateExporter{traceExporter}, sdktrace.WithMaxQueueSize(256), sdktrace.WithMaxExportBatchSize(64), sdktrace.WithExportTimeout(2*time.Second))
+	processor, err := newEnvelopeProcessor(batcher)
+	if err != nil {
+		_ = batcher.Shutdown(ctx)
+		_ = metricExporter.Shutdown(ctx)
+		return nil, err
+	}
 	traceProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(privateExporter{traceExporter}, sdktrace.WithMaxQueueSize(256), sdktrace.WithMaxExportBatchSize(64), sdktrace.WithExportTimeout(2*time.Second)),
+		sdktrace.WithSpanProcessor(processor),
 		sdktrace.WithRawSpanLimits(sdktrace.SpanLimits{AttributeValueLengthLimit: 256, AttributeCountLimit: 32, EventCountLimit: 8, LinkCountLimit: 8, AttributePerEventCountLimit: 8, AttributePerLinkCountLimit: 8}),
 		sdktrace.WithResource(res),
 	)
