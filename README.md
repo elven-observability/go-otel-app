@@ -26,7 +26,7 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 - `OTEL_SEMCONV_STABILITY_OPT_IN=database` para usar `db.client.operation.duration`
 - exportação OTLP HTTP para traces e metrics
 
-## Versoes da candidata auditada em 29 de outubro de 2026
+## Versoes da fonte auditada em 29 de outubro de 2026
 
 ### Runtime e bibliotecas principais
 
@@ -53,21 +53,29 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 
 Em 29/10/2026, [Go 1.27.3 e 1.26.10](https://go.dev/doc/devel/release) incluem a correcao `crypto/x509` de [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek). Isso e separado da auditoria das dependencias do modulo; nao e garantia de ausencia de outras vulnerabilidades.
 
-Go 1.27.3 foi executado em Linux/ARM64 real com `go mod verify`, graph readonly, build e testes com race, incluindo collectors locais saudaveis, falha/backpressure e TLS nao confiavel. A linha 1.26.10 ja possui validacao Linux/ARM64 e macOS/ARM64. A CI mantem ambos os perfis; nenhuma API ou sintaxe 1.27 foi introduzida.
+No baseline historico `8a1192f`, Go 1.27.3 foi executado em Linux/ARM64 real com `go mod verify`, graph readonly, build e testes com race, incluindo collectors locais saudaveis, falha/backpressure e TLS nao confiavel. A linha 1.26.10 tambem teve validacao Linux/ARM64 e macOS/ARM64. Esses controles nao qualificam os novos processors. A CI atual mantem ambos os perfis; nenhuma API ou sintaxe 1.27 foi introduzida.
 
 Para migrar, selecione o toolchain corrigido e repita os testes mantendo `go.mod`/`go.sum`. Go 1.27 requer macOS 13 ou posterior e remove opcoes legadas de `GODEBUG`/TLS; veja as [notas oficiais](https://go.dev/doc/go1.27). Outros sistemas/arquiteturas e throughput de producao nao foram qualificados por esse controle.
 
 Historico do baseline `8a1192f`: o limite de quantidade do BSP nao limitava o envelope inteiro, e strings truncadas ou views ja pequenas podiam reter backing grande. Os resultados Linux acima pertencem a esse baseline e nao qualificam automaticamente o fix abaixo.
 
-### Candidata de admissao antes do BSP
+### Admissao antes do BSP
 
-O bootstrap desta candidata registra um processor de snapshot antes do BSP oficial: budget agregado de dados de 32 KiB por span, com cobrancas por campos/containers, cobrindo nome, atributos/keys/arrays, status, eventos, links, contextos, resource e scope. Envelope excessivo, profundidade maior que 64 ou texto malformado e descartado antes da fila; o trabalho da app continua. Os limites anteriores de quantidade, retry, timeout, redacao e cardinalidade de metricas permanecem.
+O bootstrap registra um processor de snapshot antes do BSP oficial: budget agregado de dados de 32 KiB por span, com cobrancas por campos/containers, cobrindo nome, atributos/keys/arrays, status, eventos, links, contextos, resource e scope. Envelope excessivo, profundidade maior que 64 ou texto malformado e descartado antes da fila; o trabalho da app continua. Os limites anteriores de quantidade, retry, timeout, redacao e cardinalidade de metricas permanecem.
 
 Strings usam `strings.Clone`; arrays, containers, resources e contextos sao reconstruidos sem referencia ao span original. A interface selada do SDK exige o construtor publico [SpanStub.Snapshot](https://pkg.go.dev/go.opentelemetry.io/otel/sdk@v1.47.0/trace/tracetest#SpanStub.Snapshot), do pacote `tracetest`. Esse uso e qualificado exatamente para SDK 1.47.0, com guard de startup e testes dos getters; nao e promessa de compatibilidade com outra versao. Atualizar SDK exige revisar o contrato e repetir os testes.
 
 O budget cobre dados retidos pela fila propria, nao RSS, spans ainda ativos, caches globais do SDK, providers externos ou toda alocacao anterior ao processor. Alguns getters publicos Go de arrays materializam uma copia antes de informar o tamanho; esse custo transitorio pode acompanhar o tamanho recebido, mesmo quando a admissao o rejeita. Nao ha garantia de overhead zero ou teto universal de memoria/CPU.
 
-`go test -race ./...` inclui controles positivos/negativos de envelope, collector real, heap apos GC e BSP bloqueado com 8 pais de 1 MiB, tanto truncamento quanto views ja pequenas. A candidata ainda exige CI nos dois toolchains e revisao independente antes de promocao. Nova execucao Docker/Linux ARM64 depende da liberacao do ambiente compartilhado; nao reutilize a prova do baseline como prova deste novo codigo.
+`go test -race ./...` inclui controles positivos/negativos de envelope, collector real, heap apos GC e BSP bloqueado com 8 pais de 1 MiB, tanto truncamento quanto views ja pequenas. Esses testes do repositorio e as provas wire/GC do autor permanecem separados da validacao independente abaixo.
+
+### Estado da fonte integrada em 30/10/2026
+
+A [PR #4](https://github.com/elven-observability/go-otel-app/pull/4) integrou a fonte revisada `fa401dfb8b349753eed7071a8f6f0c25416e4228` em [main d905239](https://github.com/elven-observability/go-otel-app/commit/d905239da4831d8b1f42d1211bf3210bcb8d886e), com arvore identica. A [CI desse main](https://github.com/elven-observability/go-otel-app/actions/runs/41009878778) passou nos dois perfis Go 1.26.10/1.27.3: graph congelado, unit/race/collectors loopback e build. CI/revisao SOURCE nao estao mais pendentes para essa integracao; isso nao publica um SDK Go Elven.
+
+A revisao independente SOURCE nao encontrou bloqueio remanescente no caminho proprio de prequeue/provider normal. A execucao independente foi somente **uma invocacao de compilacao e uma funcao de teste**, `TestIndependentPrequeue`, em Go 1.27.3 Darwin/ARM64 com SDK 1.47.0: SDK -> envelope proprio -> BSP -> captura limitada em memoria. Nao e contagem de casos independentes nem aceite de facade/app completa, privacidade wire, GC ou fork.
+
+Nova qualificacao do codigo atual em Docker/Linux ARM64, integracoes tagged de Postgres/Redis, outros perfis e soak continuam pendentes; nao reutilize a prova ARM do baseline como prova desta fonte. CI e provas do autor nao viram automaticamente testes independentes, garantia de RSS/CPU ou baseline universal de seguranca.
 
 ## Pré-requisitos
 
@@ -256,8 +264,11 @@ Expõe métricas úteis do runtime Go, por exemplo:
 ## Bootstrap OpenTelemetry
 
 O bootstrap completo e os limites efetivos estao em
-[`telemetry.go`](internal/platform/observability/telemetry.go) e
+[`telemetry.go`](internal/platform/observability/telemetry.go),
+[`envelope.go`](internal/platform/observability/envelope.go) e
 [`privacy.go`](internal/platform/observability/privacy.go).
+
+Use `observability.New(ctx, cfg)` deste projeto para manter os guards, o snapshot antes da fila e o filtro do exporter juntos. O trecho abaixo e estrutural, dentro do pacote `observability`, e nao substitui o bootstrap completo. Copiar somente um `WithBatcher` ou o filtro de privacidade ignora o budget prequeue de 32 KiB; o helper de snapshot e obrigatorio para esse contrato.
 
 - `OTEL_SDK_DISABLED=true` desabilita providers, exportacao e `/metrics` (204). Reinicie a aplicacao para aplicar disable ou rollback.
 - Configuracao invalida de telemetria gera aviso generico e providers no-op; falhas reais de banco/Redis continuam sendo erros da aplicacao.
@@ -298,9 +309,19 @@ promExporter, err := otelprom.New(
 	otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes),
 )
 
+batcher := sdktrace.NewBatchSpanProcessor(privateExporter{traceExporter},
+	sdktrace.WithMaxQueueSize(256), sdktrace.WithMaxExportBatchSize(64),
+	sdktrace.WithExportTimeout(2*time.Second),
+)
+processor, err := newEnvelopeProcessor(batcher)
+if err != nil {
+	_ = batcher.Shutdown(ctx)
+	_ = metricExporter.Shutdown(ctx)
+	return nil, err
+}
 traceProvider := sdktrace.NewTracerProvider(
-	// Veja telemetry.go: batch limitado e exporter com filtro de privacidade.
-	sdktrace.WithBatcher(privateExporter{traceExporter}, sdktrace.WithMaxQueueSize(256), sdktrace.WithMaxExportBatchSize(64)),
+	// Nunca registre o batcher diretamente: ele recebe somente o snapshot destacado.
+	sdktrace.WithSpanProcessor(processor),
 	sdktrace.WithResource(res),
 )
 
