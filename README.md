@@ -4,7 +4,7 @@ Aplicacao de referencia sobre os SDKs oficiais OpenTelemetry, nao um SDK Go Elve
 Documentacao autoritativa: [docs.elven.works](https://docs.elven.works/).
 Fonte da documentacao e correcoes: [elvenworks-ps/docs.elven.works](https://github.com/elvenworks-ps/docs.elven.works).
 
-O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. A candidata foi testada em Go 1.26.10 no macOS/ARM64; use uma versao corrigida e suportada do runtime.
+O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. Esse e o piso de API, nao uma recomendacao de patch de seguranca. Os perfis corrigidos desta auditoria sao Go 1.26.10 e Go 1.27.3, sem elevar o piso do modulo.
 
 Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada em:
 
@@ -30,7 +30,7 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 
 ### Runtime e bibliotecas principais
 
-- `Go 1.26.10` (requisito do modulo: `1.26.0`)
+- `Go 1.26.10` na linha anterior e `Go 1.27.3` no perfil atual (requisito do modulo preservado: `1.26.0`)
 - `go.opentelemetry.io/otel v1.47.0`
 - `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0`
 - `go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0`
@@ -49,11 +49,21 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 - `postgres:17-alpine`
 - `redis:8.2-alpine`
 
+### Perfis de runtime e seguranca
+
+Em 29/10/2026, [Go 1.27.3 e 1.26.10](https://go.dev/doc/devel/release) incluem a correcao `crypto/x509` de [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek). Isso e separado da auditoria das dependencias do modulo; nao e garantia de ausencia de outras vulnerabilidades.
+
+Go 1.27.3 foi executado em Linux/ARM64 real com `go mod verify`, graph readonly, build e testes com race, incluindo collectors locais saudaveis, falha/backpressure e TLS nao confiavel. A linha 1.26.10 ja possui validacao Linux/ARM64 e macOS/ARM64. A CI mantem ambos os perfis; nenhuma API ou sintaxe 1.27 foi introduzida.
+
+Para migrar, selecione o toolchain corrigido e repita os testes mantendo `go.mod`/`go.sum`. Go 1.27 requer macOS 13 ou posterior e remove opcoes legadas de `GODEBUG`/TLS; veja as [notas oficiais](https://go.dev/doc/go1.27). Outros sistemas/arquiteturas e throughput de producao nao foram qualificados por esse controle.
+
+Limite aberto: fila limitada por quantidade nao limita o envelope inteiro antes do BSP. Metadados grandes e o backing original de strings truncadas ainda exigem admissao/detachment; resultados de compatibilidade nao encerram essa revisao de recursos.
+
 ## Pré-requisitos
 
 Para replicar a demo sem surpresas, assuma o seguinte:
 
-- `Go 1.26.0` instalado
+- `Go 1.26.10` ou `Go 1.27.3` instalado (patches corrigidos testados; piso de API `1.26.0`)
 - Docker Desktop ou Docker Engine funcionando
 - acesso de rede do seu notebook até o collector
 - um collector OTLP HTTP já existente e aceitando:

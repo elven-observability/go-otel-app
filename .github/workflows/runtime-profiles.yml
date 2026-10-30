@@ -1,0 +1,37 @@
+name: Runtime profiles
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.26.10', '1.27.3']
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '${{ matrix.go }}'
+          cache: true
+      - name: Verify frozen module graph
+        run: go mod verify
+      - name: Unit, race and loopback collector controls
+        run: go test -race -count=1 -timeout=3m ./...
+      - name: Build reference application
+        run: go build ./cmd/api
+      - name: Reject graph mutation
+        run: git diff --exit-code -- go.mod go.sum
