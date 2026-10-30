@@ -4,7 +4,7 @@ Aplicacao de referencia sobre os SDKs oficiais OpenTelemetry, nao um SDK Go Elve
 Documentacao autoritativa: [docs.elven.works](https://docs.elven.works/).
 Fonte da documentacao e correcoes: [elvenworks-ps/docs.elven.works](https://github.com/elvenworks-ps/docs.elven.works).
 
-O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. A candidata foi testada em Go 1.26.10 no macOS/ARM64; use uma versao corrigida e suportada do runtime.
+O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. Esse e o piso de API, nao uma recomendacao de patch de seguranca. Os perfis corrigidos desta auditoria sao Go 1.26.10 e Go 1.27.3, sem elevar o piso do modulo.
 
 Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada em:
 
@@ -30,7 +30,7 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 
 ### Runtime e bibliotecas principais
 
-- `Go 1.26.10` (requisito do modulo: `1.26.0`)
+- `Go 1.26.10` na linha anterior e `Go 1.27.3` no perfil atual (requisito do modulo preservado: `1.26.0`)
 - `go.opentelemetry.io/otel v1.47.0`
 - `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0`
 - `go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0`
@@ -49,11 +49,31 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 - `postgres:17-alpine`
 - `redis:8.2-alpine`
 
+### Perfis de runtime e seguranca
+
+Em 29/10/2026, [Go 1.27.3 e 1.26.10](https://go.dev/doc/devel/release) incluem a correcao `crypto/x509` de [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek). Isso e separado da auditoria das dependencias do modulo; nao e garantia de ausencia de outras vulnerabilidades.
+
+Go 1.27.3 foi executado em Linux/ARM64 real com `go mod verify`, graph readonly, build e testes com race, incluindo collectors locais saudaveis, falha/backpressure e TLS nao confiavel. A linha 1.26.10 ja possui validacao Linux/ARM64 e macOS/ARM64. A CI mantem ambos os perfis; nenhuma API ou sintaxe 1.27 foi introduzida.
+
+Para migrar, selecione o toolchain corrigido e repita os testes mantendo `go.mod`/`go.sum`. Go 1.27 requer macOS 13 ou posterior e remove opcoes legadas de `GODEBUG`/TLS; veja as [notas oficiais](https://go.dev/doc/go1.27). Outros sistemas/arquiteturas e throughput de producao nao foram qualificados por esse controle.
+
+Historico do baseline `8a1192f`: o limite de quantidade do BSP nao limitava o envelope inteiro, e strings truncadas ou views ja pequenas podiam reter backing grande. Os resultados Linux acima pertencem a esse baseline e nao qualificam automaticamente o fix abaixo.
+
+### Candidata de admissao antes do BSP
+
+O bootstrap desta candidata registra um processor de snapshot antes do BSP oficial: budget agregado de dados de 32 KiB por span, com cobrancas por campos/containers, cobrindo nome, atributos/keys/arrays, status, eventos, links, contextos, resource e scope. Envelope excessivo, profundidade maior que 64 ou texto malformado e descartado antes da fila; o trabalho da app continua. Os limites anteriores de quantidade, retry, timeout, redacao e cardinalidade de metricas permanecem.
+
+Strings usam `strings.Clone`; arrays, containers, resources e contextos sao reconstruidos sem referencia ao span original. A interface selada do SDK exige o construtor publico [SpanStub.Snapshot](https://pkg.go.dev/go.opentelemetry.io/otel/sdk@v1.47.0/trace/tracetest#SpanStub.Snapshot), do pacote `tracetest`. Esse uso e qualificado exatamente para SDK 1.47.0, com guard de startup e testes dos getters; nao e promessa de compatibilidade com outra versao. Atualizar SDK exige revisar o contrato e repetir os testes.
+
+O budget cobre dados retidos pela fila propria, nao RSS, spans ainda ativos, caches globais do SDK, providers externos ou toda alocacao anterior ao processor. Alguns getters publicos Go de arrays materializam uma copia antes de informar o tamanho; esse custo transitorio pode acompanhar o tamanho recebido, mesmo quando a admissao o rejeita. Nao ha garantia de overhead zero ou teto universal de memoria/CPU.
+
+`go test -race ./...` inclui controles positivos/negativos de envelope, collector real, heap apos GC e BSP bloqueado com 8 pais de 1 MiB, tanto truncamento quanto views ja pequenas. A candidata ainda exige CI nos dois toolchains e revisao independente antes de promocao. Nova execucao Docker/Linux ARM64 depende da liberacao do ambiente compartilhado; nao reutilize a prova do baseline como prova deste novo codigo.
+
 ## Pré-requisitos
 
 Para replicar a demo sem surpresas, assuma o seguinte:
 
-- `Go 1.26.0` instalado
+- `Go 1.26.10` ou `Go 1.27.3` instalado (patches corrigidos testados; piso de API `1.26.0`)
 - Docker Desktop ou Docker Engine funcionando
 - acesso de rede do seu notebook até o collector
 - um collector OTLP HTTP já existente e aceitando:
