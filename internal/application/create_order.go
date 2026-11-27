@@ -160,11 +160,7 @@ func (uc CreateOrderUseCase) enqueueFulfillment(ctx context.Context, order domai
 		Attempt:           1,
 	}
 
-	if err := uc.Queue.Enqueue(ctx, job); err != nil {
-		recordSpanError(span, err)
-		return domain.Order{}, err
-	}
-
+	// Commit the queued state before a worker can publish a terminal state.
 	if err := uc.Repo.UpdateStatus(ctx, order.ID, domain.OrderStatusQueued, nil); err != nil {
 		recordSpanError(span, err)
 		return domain.Order{}, err
@@ -173,6 +169,11 @@ func (uc CreateOrderUseCase) enqueueFulfillment(ctx context.Context, order domai
 	order.Status = domain.OrderStatusQueued
 	order.UpdatedAt = time.Now().UTC()
 	if err := uc.Cache.Set(ctx, order); err != nil {
+		recordSpanError(span, err)
+		return domain.Order{}, err
+	}
+
+	if err := uc.Queue.Enqueue(ctx, job); err != nil {
 		recordSpanError(span, err)
 		return domain.Order{}, err
 	}
