@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ['1.26.10', '1.27.3']
+        go: ['1.26.11', '1.27.4']
     env:
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
@@ -31,6 +31,8 @@ jobs:
         run: go mod verify
       - name: Unit, race and loopback collector controls
         run: go test -race -count=1 -timeout=3m ./...
+      - name: Tagged integration with disposable PostgreSQL and Redis
+        run: go test -v -race -tags=integration -count=1 -timeout=6m ./test/integration
       - name: Build reference application
         run: go build ./cmd/api
       - name: Reject graph mutation
