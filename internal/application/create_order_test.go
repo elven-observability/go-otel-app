@@ -176,7 +176,82 @@ func TestCreateOrderEnqueueFailure(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, assertDomainErrorType(err, "internal_error"))
 	require.Equal(t, domain.OrderStatusFailed, firstStoredOrder(repo).Status)
+	require.Equal(t, domain.OrderStatusFailed, cache.store[firstStoredOrder(repo).ID].Status)
 	require.Equal(t, "enqueue", metrics.orderFailed[0].Stage)
+}
+
+func TestCreateOrderDoesNotOverwriteFastFulfillment(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeOrderRepository()
+	cache := newFakeOrderCache()
+	queue := &immediateFulfillmentQueue{}
+	metrics := &fakeMetrics{}
+	worker := ProcessFulfillmentUseCase{
+		Repo: repo, Cache: cache, Queue: queue, Metrics: metrics,
+		Shipping: fakeShippingGateway{}, Tracer: testTracer(), MaxAttempts: 1,
+	}
+	queue.fulfill = worker.Execute
+	create := CreateOrderUseCase{
+		Repo: repo, Cache: cache, Queue: queue, Metrics: metrics,
+		Payment: fakePaymentGateway{}, Inventory: fakeInventoryGateway{}, Tracer: testTracer(),
+	}
+	order, err := create.Execute(context.Background(), domain.CreateOrderInput{
+		CustomerID: "synthetic-customer", SKU: "synthetic-item", Quantity: 1, AmountCents: 100,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, domain.OrderStatusQueued, order.Status)
+	require.Len(t, queue.jobs, 1)
+	require.Len(t, repo.updateLogs, 2)
+	require.Equal(t, []domain.OrderStatus{domain.OrderStatusQueued, domain.OrderStatusFulfilled},
+		[]domain.OrderStatus{repo.updateLogs[0].Status, repo.updateLogs[1].Status})
+	require.Equal(t, domain.OrderStatusFulfilled, repo.orders[order.ID].Status)
+	require.Equal(t, domain.OrderStatusFulfilled, cache.store[order.ID].Status)
+}
+
+func TestCreateOrderQueuedCacheFailureDoesNotPublish(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeOrderRepository()
+	cache := &queuedWriteFailingCache{newFakeOrderCache()}
+	queue := &fakeQueue{}
+	create := CreateOrderUseCase{
+		Repo: repo, Cache: cache, Queue: queue, Metrics: &fakeMetrics{},
+		Payment: fakePaymentGateway{}, Inventory: fakeInventoryGateway{}, Tracer: testTracer(),
+	}
+	_, err := create.Execute(context.Background(), domain.CreateOrderInput{
+		CustomerID: "synthetic-customer", SKU: "synthetic-item", Quantity: 1, AmountCents: 100,
+	})
+
+	require.Error(t, err)
+	require.Empty(t, queue.jobs)
+	order := firstStoredOrder(repo)
+	require.Equal(t, domain.OrderStatusFailed, order.Status)
+	require.Equal(t, domain.OrderStatusFailed, cache.store[order.ID].Status)
+}
+
+type immediateFulfillmentQueue struct {
+	fakeQueue
+	fulfill func(context.Context, domain.FulfillmentJob) error
+}
+
+func (q *immediateFulfillmentQueue) Enqueue(ctx context.Context, job domain.FulfillmentJob) error {
+	if err := q.fakeQueue.Enqueue(ctx, job); err != nil {
+		return err
+	}
+	return q.fulfill(ctx, job)
+}
+
+type queuedWriteFailingCache struct {
+	*fakeOrderCache
+}
+
+func (c *queuedWriteFailingCache) Set(ctx context.Context, order domain.Order) error {
+	if order.Status == domain.OrderStatusQueued {
+		return errors.New("queued cache write failed")
+	}
+	return c.fakeOrderCache.Set(ctx, order)
 }
 
 func firstStoredOrder(repo *fakeOrderRepository) domain.Order {

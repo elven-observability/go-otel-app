@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	testcontainers "github.com/testcontainers/testcontainers-go"
@@ -364,7 +363,7 @@ func startPostgresContainer(t *testing.T, ctx context.Context) (testcontainers.C
 				"POSTGRES_PASSWORD": "postgres",
 			},
 			WaitingFor: wait.ForAll(
-				wait.ForListeningPort(nat.Port("5432/tcp")),
+				wait.ForListeningPort("5432/tcp"),
 				wait.ForLog("database system is ready to accept connections"),
 			),
 		},
@@ -373,7 +372,7 @@ func startPostgresContainer(t *testing.T, ctx context.Context) (testcontainers.C
 
 	host, err := container.Host(ctx)
 	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, nat.Port("5432/tcp"))
+	port, err := container.MappedPort(ctx, "5432/tcp")
 	require.NoError(t, err)
 
 	databaseURL := fmt.Sprintf(
@@ -394,7 +393,7 @@ func startRedisContainer(t *testing.T, ctx context.Context) (testcontainers.Cont
 			Image:        "redis:8.2-alpine",
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor: wait.ForAll(
-				wait.ForListeningPort(nat.Port("6379/tcp")),
+				wait.ForListeningPort("6379/tcp"),
 				wait.ForLog("Ready to accept connections"),
 			),
 		},
@@ -403,7 +402,7 @@ func startRedisContainer(t *testing.T, ctx context.Context) (testcontainers.Cont
 
 	host, err := container.Host(ctx)
 	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, nat.Port("6379/tcp"))
+	port, err := container.MappedPort(ctx, "6379/tcp")
 	require.NoError(t, err)
 
 	return container, net.JoinHostPort(host, port.Port())

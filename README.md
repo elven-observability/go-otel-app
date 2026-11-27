@@ -4,7 +4,7 @@ Aplicacao de referencia sobre os SDKs oficiais OpenTelemetry, nao um SDK Go Elve
 Documentacao autoritativa: [docs.elven.works](https://docs.elven.works/).
 Fonte da documentacao e correcoes: [elvenworks-ps/docs.elven.works](https://github.com/elvenworks-ps/docs.elven.works).
 
-O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. Esse e o piso de API, nao uma recomendacao de patch de seguranca. Os perfis corrigidos desta auditoria sao Go 1.26.10 e Go 1.27.3, sem elevar o piso do modulo.
+O `go.mod` exige **Go 1.26.0 ou superior**, nao Go 1.21. Esse e o piso de API, nao uma recomendacao de patch de seguranca. A matriz usa Go 1.26.11 e Go 1.27.4, sem elevar o piso do modulo.
 
 Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada em:
 
@@ -26,11 +26,11 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 - `OTEL_SEMCONV_STABILITY_OPT_IN=database` para usar `db.client.operation.duration`
 - exportação OTLP HTTP para traces e metrics
 
-## Versoes da fonte auditada em 29 de outubro de 2026
+## Dependencias desta revisao
 
 ### Runtime e bibliotecas principais
 
-- `Go 1.26.10` na linha anterior e `Go 1.27.3` no perfil atual (requisito do modulo preservado: `1.26.0`)
+- `Go 1.26.11` na linha anterior e `Go 1.27.4` no perfil atual (requisito do modulo preservado: `1.26.0`)
 - `go.opentelemetry.io/otel v1.47.0`
 - `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0`
 - `go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0`
@@ -42,7 +42,7 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 - `github.com/redis/go-redis/v9 v9.23.0`
 - `github.com/redis/go-redis/extra/redisotel/v9 v9.23.0`
 - `github.com/XSAM/otelsql v0.44.0`
-- `github.com/testcontainers/testcontainers-go v0.41.0`
+- `github.com/testcontainers/testcontainers-go v0.45.0`
 
 ### Infra local
 
@@ -50,6 +50,12 @@ Demo para ensinar instrumentacao de `traces + metrics` com OpenTelemetry, focada
 - `redis:8.2-alpine`
 
 ### Perfis de runtime e seguranca
+
+Go 1.27.4 e 1.26.11 incluem as [correcoes de novembro de 2026](https://go.dev/doc/devel/release) para a toolchain e `net/http`. A CI usa `GOTOOLCHAIN=local` e preserva `go.mod` e `go.sum` durante a verificacao.
+
+A integracao usa os clientes separados do Moby por meio do Testcontainers e nao seleciona mais o modulo legado `github.com/docker/docker`. Rode `go test -race -tags=integration ./test/integration` somente com um daemon Docker de testes descartavel. Os testes iniciam PostgreSQL e Redis reais; a suite padrao nao os inicia.
+
+Ao atualizar o grafo, preserve o requisito indireto corrigido de `go-jose/v4` enquanto o gRPC carregar um minimo afetado. `go mod tidy` sozinho pode remove-lo por falta de import; rode `go get github.com/go-jose/go-jose/v4@v4.1.6` apos tidy se a lista de modulos voltar a selecionar 4.1.4. Confira o grafo e consulte a base de avisos novamente antes de aceitar a atualizacao.
 
 Em 29/10/2026, [Go 1.27.3 e 1.26.10](https://go.dev/doc/devel/release) incluem a correcao `crypto/x509` de [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek). Isso e separado da auditoria das dependencias do modulo; nao e garantia de ausencia de outras vulnerabilidades.
 
@@ -81,7 +87,7 @@ Nova qualificacao do codigo atual em Docker/Linux ARM64, integracoes tagged de P
 
 Para replicar a demo sem surpresas, assuma o seguinte:
 
-- `Go 1.26.10` ou `Go 1.27.3` instalado (patches corrigidos testados; piso de API `1.26.0`)
+- `Go 1.26.11` ou `Go 1.27.4` instalado (piso de API `1.26.0`)
 - Docker Desktop ou Docker Engine funcionando
 - acesso de rede do seu notebook até o collector
 - um collector OTLP HTTP já existente e aceitando:
@@ -172,13 +178,21 @@ flowchart LR
 3. grava o pedido no cache Redis
 4. chama simulador de pagamento via HTTP
 5. chama simulador de inventário via HTTP
-6. enfileira um job de fulfillment no Redis
+6. grava o estado `queued` no PostgreSQL e no cache antes de publicar o job de fulfillment no Redis
 7. responde `201` com `trace_id`
 8. o worker interno consome a fila
 9. o worker chama o simulador de shipping
 10. em sucesso, marca o pedido como `fulfilled`
 11. em falha, tenta novamente
 12. ao atingir o limite, envia para DLQ e marca como `failed`
+
+O `201` confirma a criação e a aceitação do job, não o fulfillment. Consulte
+`GET /api/v1/orders/{id}` para ler o estado atual. Gravar `queued` antes de
+publicar evita que o produtor sobrescreva `fulfilled` de um worker rápido.
+PostgreSQL e Redis continuam sem transação compartilhada. Uma queda antes de
+publicar pode deixar um pedido em `queued` sem job; um timeout de publicação
+não garante que o Redis deixou de recebê-lo. Confira o pedido e a fila antes
+de reencaminhar um job, para evitar duplicação.
 
 ## Endpoints
 
@@ -278,6 +292,24 @@ Use `observability.New(ctx, cfg)` deste projeto para manter os guards, o snapsho
 - HTTPS com validacao TLS para coletores remotos; HTTP permitido apenas em loopback para desenvolvimento. Nao use credenciais na URL.
 - Logs ficam em stdout; nao ha exporter OTLP de logs nesta referencia. Nao instale uma segunda autoridade de instrumentacao no mesmo processo.
 - Jobs carregam somente `traceparent`; o worker preserva a identidade do trace, inclusive em retries. Nao transportam baggage, headers ou credenciais. Jobs antigos sem esse campo continuam validos e iniciam outro trace.
+
+### Certificados para OTLP HTTP
+
+Para um coletor HTTPS com CA própria, forneça o arquivo PEM em
+`OTEL_EXPORTER_OTLP_CERTIFICATE`. Se o coletor exigir mTLS, forneça também:
+
+```bash
+export OTEL_EXPORTER_OTLP_CERTIFICATE=/run/secrets/collector-ca.pem
+export OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE=/run/secrets/otel-client.pem
+export OTEL_EXPORTER_OTLP_CLIENT_KEY=/run/secrets/otel-client-key.pem
+```
+
+As três variáveis se aplicam aos exportadores HTTP de traces e métricas. Os
+dois endpoints ainda precisam de HTTPS, dos caminhos de cada sinal e de um
+nome DNS ou IP que conste no certificado do coletor. Monte a chave privada
+de forma que só o processo autorizado possa lê-la; não a inclua no Git, na URL
+ou em logs. Para TLS unilateral, deixe as duas variáveis de cliente ausentes.
+A resposta da API de pedidos não confirma que o coletor aceitou telemetria.
 
 O coração da demo está em criar um `TracerProvider` e um `MeterProvider` com dois destinos para métricas:
 
@@ -865,7 +897,9 @@ Cobrem:
 - falha de pagamento
 - falha de inventory
 - erro de persistência
-- erro de enqueue
+- erro de enqueue com compensação para `failed`
+- worker rápido sem sobrescrever `fulfilled` com `queued`
+- erro de cache antes da publicação sem deixar job na fila
 - sucesso no worker
 - retry no worker
 - envio para DLQ
